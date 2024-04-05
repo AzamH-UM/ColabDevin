@@ -125,6 +125,9 @@ class SandboxInteractive:
             self.setup_devin_user()
         atexit.register(self.cleanup)
 
+    def cleanup(self):
+        return
+
     def setup_devin_user(self):
         exit_code, logs = self.container.exec_run(
             [
