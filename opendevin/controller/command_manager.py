@@ -1,12 +1,12 @@
 from typing import List
 
 from opendevin.observation import CmdOutputObservation
-from opendevin.sandbox.sandbox import DockerInteractive
+from opendevin.sandbox.sandbox import SandboxInteractive
 
 class CommandManager:
     def __init__(self, dir: str, container_image: str | None = None,):
         self.directory = dir
-        self.shell = DockerInteractive(id="default", workspace_dir=dir, container_image=container_image)
+        self.shell = SandboxInteractive(id="default", workspace_dir=dir)
 
     def run_command(self, command: str, background=False) -> CmdOutputObservation:
         if background:
