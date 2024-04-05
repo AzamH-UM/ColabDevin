@@ -121,7 +121,6 @@ class SandboxInteractive:
 
         self.container_name = f"sandbox-{self.instance_id}"
 
-        self.restart_sandbox_container()
         if RUN_AS_DEVIN:
             self.setup_devin_user()
         atexit.register(self.cleanup)
