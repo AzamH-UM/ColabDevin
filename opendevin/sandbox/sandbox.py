@@ -1,3 +1,5 @@
+Rewritten sandbox.py to use subprocess instead of docker
+
 import atexit
 import os
 import select
@@ -7,7 +9,6 @@ import uuid
 from collections import namedtuple
 from typing import Dict, List, Tuple
 
-import docker
 import concurrent.futures
 
 from opendevin import config
@@ -15,7 +16,7 @@ from opendevin import config
 InputType = namedtuple("InputType", ["content"])
 OutputType = namedtuple("OutputType", ["content"])
 
-DIRECTORY_REWRITE = config.get("DIRECTORY_REWRITE")  # helpful for docker-in-docker scenarios
+DIRECTORY_REWRITE = config.get("DIRECTORY_REWRITE")  # helpful for sandbox-in-sandbox scenarios
 CONTAINER_IMAGE = config.get("SANDBOX_CONTAINER_IMAGE")
 
 # FIXME: On some containers, the devin user doesn't have enough permission, e.g. to install packages
@@ -35,7 +36,7 @@ class BackgroundCommand:
         self.result = result
         self.pid = pid
 
-    def parse_docker_exec_output(self, logs: bytes) -> Tuple[bytes, bytes]:
+    def parse_sandbox_exec_output(self, logs: bytes) -> Tuple[bytes, bytes]:
         res = b""
         tail = b""
         i = 0
@@ -72,14 +73,14 @@ class BackgroundCommand:
                 data = self.result.output.read(4096)  # type: ignore[has-type]
                 if not data:
                     break
-                chunk, last_remains = self.parse_docker_exec_output(last_remains + data)
+                chunk, last_remains = self.parse_sandbox_exec_output(last_remains + data)
                 logs += chunk
             else:
                 break
         return (logs + last_remains).decode("utf-8", errors="replace")
 
 
-class DockerInteractive:
+class SandboxInteractive:
     closed = False
     cur_background_id = 0
     background_commands: Dict[int, BackgroundCommand] = {}
@@ -120,7 +121,7 @@ class DockerInteractive:
 
         self.container_name = f"sandbox-{self.instance_id}"
 
-        self.restart_docker_container()
+        self.restart_sandbox_container()
         if RUN_AS_DEVIN:
             self.setup_devin_user()
         atexit.register(self.cleanup)
@@ -201,21 +202,21 @@ class DockerInteractive:
         return bg_cmd
 
     def close(self):
-        self.stop_docker_container()
+        self.stop_sandbox_container()
         self.closed = True
 
-    def stop_docker_container(self):
+    def stop_sandbox_container(self):
 
-        # Initialize docker client. Throws an exception if Docker is not reachable.
+        # Initialize sandbox client. Throws an exception if Sandbox is not reachable.
         try:
-            docker_client = docker.from_env()
-        except docker.errors.DockerException as e:
-            print('Please check Docker is running using `docker ps`.')
+            sandbox_client = sandbox.from_env()
+        except sandbox.errors.SandboxException as e:
+            print('Please check Sandbox is running using `sandbox ps`.')
             print(f"Error! {e}", flush=True)
             raise e
 
         try:
-            container = docker_client.containers.get(self.container_name)
+            container = sandbox_client.containers.get(self.container_name)
             container.stop()
             container.remove()
             elapsed = 0
@@ -224,23 +225,23 @@ class DockerInteractive:
                 elapsed += 1
                 if elapsed > self.timeout:
                     break
-                container = docker_client.containers.get(self.container_name)
-        except docker.errors.NotFound:
+                container = sandbox_client.containers.get(self.container_name)
+        except sandbox.errors.NotFound:
             pass
 
-    def restart_docker_container(self):
+    def restart_sandbox_container(self):
         try:
-            self.stop_docker_container()
-        except docker.errors.DockerException as e:
+            self.stop_sandbox_container()
+        except sandbox.errors.SandboxException as e:
             print(f"Failed to stop container: {e}")
             raise e 
 
         try:
-            # Initialize docker client. Throws an exception if Docker is not reachable.
-            docker_client = docker.from_env()
+            # Initialize sandbox client. Throws an exception if Sandbox is not reachable.
+            sandbox_client = sandbox.from_env()
 
             # start the container
-            self.container = docker_client.containers.run(
+            self.container = sandbox_client.containers.run(
                 self.container_image,
                 command="tail -f /dev/null",
                 network_mode="host",
@@ -263,7 +264,7 @@ class DockerInteractive:
                 break
             time.sleep(1)
             elapsed += 1
-            self.container = docker_client.containers.get(self.container_name)
+            self.container = sandbox_client.containers.get(self.container_name)
             if elapsed > self.timeout:
                 break
         if self.container.status != "running":
@@ -279,27 +280,27 @@ class DockerInteractive:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Interactive Docker container")
+    parser = argparse.ArgumentParser(description="Interactive Sandbox container")
     parser.add_argument(
         "-d",
         "--directory",
         type=str,
         default=None,
-        help="The directory to mount as the workspace in the Docker container.",
+        help="The directory to mount as the workspace in the Sandbox container.",
     )
     args = parser.parse_args()
 
     try:
-        docker_interactive = DockerInteractive(
+        sandbox_interactive = SandboxInteractive(
             workspace_dir=args.directory,
         )
     except Exception as e:
-        print(f"Failed to start Docker container: {e}")
+        print(f"Failed to start Sandbox container: {e}")
         sys.exit(1)
 
-    print("Interactive Docker container started. Type 'exit' or use Ctrl+C to exit.")
+    print("Interactive Sandbox container started. Type 'exit' or use Ctrl+C to exit.")
 
-    bg_cmd = docker_interactive.execute_in_background(
+    bg_cmd = sandbox_interactive.execute_in_background(
         "while true; do echo 'dot ' && sleep 1; done"
     )
 
@@ -315,16 +316,16 @@ if __name__ == "__main__":
                 print("Exiting...")
                 break
             if user_input.lower() == "kill":
-                docker_interactive.kill_background(bg_cmd.id)
+                sandbox_interactive.kill_background(bg_cmd.id)
                 print("Background process killed")
                 continue
-            exit_code, output = docker_interactive.execute(user_input)
+            exit_code, output = sandbox_interactive.execute(user_input)
             print("exit code:", exit_code)
             print(output + "\n", end="")
-            if bg_cmd.id in docker_interactive.background_commands:
-                logs = docker_interactive.read_logs(bg_cmd.id)
+            if bg_cmd.id in sandbox_interactive.background_commands:
+                logs = sandbox_interactive.read_logs(bg_cmd.id)
                 print("background logs:", logs, "\n")
             sys.stdout.flush()
     except KeyboardInterrupt:
         print("\nExiting...")
-    docker_interactive.close()
+    sandbox_interactive.close()
